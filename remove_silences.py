@@ -28,8 +28,9 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
     Returns:
         True if the file was modified (or would be in dry run), False otherwise.
     """
-    logging.info(f"Processing: {filepath}")
+    logging.debug(f"Processing: {filepath}")
     modified = False
+
     try:
         # Load the original audio to get its full duration for comparison
         # and to ensure we use its original properties (sr, sample_width, channels)
@@ -47,16 +48,20 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
         ))
 
         if not audio_regions:
-            logging.info(f"No audio events detected in {filepath} above threshold. File might be entirely silent or too quiet. Skipping.")
+            logging.warning(f"No audio events detected in {filepath} above threshold. File might be entirely silent or too quiet. Skipping.")
+            if args.output_dir:
+              output_filepath = os.path.join(args.output_dir, os.path.basename(filepath))
+              shutil.copy2(filepath, output_filepath)
+              logging.info(f"Saved unmodified audio to: {output_filepath}")
             return False
-
-        # The first sound starts at the beginning of the first region
-        first_sound_start_time = audio_regions[0].start - args.analysis_window_s
-
-        # The last sound ends at the end of the last region
-        last_sound_end_time = audio_regions[-1].end + args.analysis_window_s
-
+        
         original_duration = original_audio_full.duration
+
+        # The first sound starts at the beginning of the first region, but never before 0.0
+        first_sound_start_time = max(0.0, audio_regions[0].start - args.analysis_window_s)
+
+        # The last sound ends at the end of the last region, but never after the original duration
+        last_sound_end_time = min(original_duration, audio_regions[-1].end + args.analysis_window_s)
 
         # Define a small tolerance, e.g., based on analysis window,
         # to avoid trimming if the silence is negligible.
@@ -73,6 +78,11 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
 
         if not (needs_front_trimming or needs_back_trimming):
             logging.info(f"No significant leading/trailing silence to remove in {filepath}. Skipping modification.")
+            if args.output_dir:
+              output_filepath = os.path.join(args.output_dir, os.path.basename(filepath))
+              shutil.copy2(filepath, output_filepath)
+              logging.info(f"Saved unmodified audio to: {output_filepath}")
+
             return False
 
         # This file needs to be modified
@@ -87,15 +97,15 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
 
         # Determine output path
         if args.output_dir:
-            if not os.path.exists(args.output_dir):
-                os.makedirs(args.output_dir)
-                logging.info(f"Created output directory: {args.output_dir}")
             output_filepath = os.path.join(args.output_dir, os.path.basename(filepath))
         else:
             # Overwrite original file (consider adding a backup option)
             if args.backup:
                 # Prepend .bak before the file extension
-                backup_filepath = f"{filepath}.bak{pathlib.Path(filepath).suffix}"
+                path = pathlib.Path(filepath)
+                suffix = path.suffix
+                backup_filepath = path.with_suffix(f".bak{suffix}")
+
                 logging.info(f"Backing up original file to {backup_filepath}")
                 shutil.copy2(filepath, backup_filepath)
             output_filepath = filepath
@@ -139,7 +149,7 @@ def main():
              "Ensure patterns are quoted if they might be expanded by the shell."
     )
     parser.add_argument(
-        "-o", "--output-dir",
+        "-o", "--output-dir", "--outdir",
         type=str,
         default=None,
         help="Optional directory to save modified files. If not provided, original files are overwritten."
@@ -147,13 +157,26 @@ def main():
     parser.add_argument(
         "--backup",
         action="store_true",
-        help="Create a .bak copy of the original file before overwriting (if not using --output-dir)."
+        default=True,
+        help="Create a .bak copy of the original file before overwriting (default)."
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_false",
+        dest="backup", 
+        help="Disable backups."
+    )
+
+    parser.add_argument(
+        "--restore",
+        action="store_true",
+        help="Restore original files from .bak backups and exit."
     )
 
     # Auditok parameters (similar to the provided script)
     parser.add_argument(
         "-t", "--energy-threshold",
-        default=48, # auditok's default, adjust as needed. Original script used 40.
+        default=45, # auditok's default, adjust as needed. Original script used 40.
         type=float, # auditok uses float for threshold
         help="Energy threshold for detecting audio events. Higher values detect only louder sounds. (default: 50)"
     )
@@ -201,13 +224,31 @@ def main():
         logging.info("--- DRY RUN MODE ENABLED: No files will be modified. ---")
 
     if args.backup and args.output_dir:
+        args.backup = False
         logging.warning("--backup option is ignored when --output-dir is specified, as originals are not overwritten.")
 
+    if args.restore:
+      restored_count = 0
+      for pattern in args.input_files:
+          for original_path in glob.glob(pattern):
+              
+              path = pathlib.Path(original_path)
+              suffix = path.suffix
+              bak_path = path.with_suffix(f".bak{suffix}")
+              
+              if os.path.exists(bak_path):
+                  shutil.move(bak_path, original_path)
+                  logging.info(f"Restored: {original_path}")
+                  restored_count += 1
+              else:
+                  logging.warning(f"Backup not found: {bak_path}")
+      logging.info(f"--- Restore Complete: {restored_count} file(s) restored. ---")
+      return
 
     # Expand glob patterns and collect all file paths
     all_filepaths = []
     for pattern in args.input_files:
-        expanded_paths = glob.glob(pattern, recursive=True) # Add recursive if needed for **/
+        expanded_paths = glob.glob(pattern)
         if not expanded_paths:
             logging.warning(f"No files found matching pattern: {pattern}")
         all_filepaths.extend(expanded_paths)
@@ -221,6 +262,11 @@ def main():
 
     modified_files_count = 0
     processed_files_count = 0
+
+    if args.output_dir:
+      if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+        logging.info(f"Created output directory: {args.output_dir}")
 
     for filepath in unique_filepaths:
         if not os.path.isfile(filepath):
