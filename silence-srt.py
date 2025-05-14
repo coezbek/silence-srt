@@ -1,8 +1,8 @@
-
 import argparse
 import auditok
 import re
 import logging
+import os
 
 
 # SRT time format is HH:MM:SS,mmm or HH:MM:SS.mmm
@@ -119,6 +119,21 @@ def main(args):
     if args.file_to_fix is None:
         return # Early exit
 
+    # Initialize for non-speech processing if argument is provided
+    non_speech_srt_entries = []
+    non_speech_file_counter = 1
+    loaded_audio_for_ns = None
+
+    if args.non_speech_dir:
+        os.makedirs(args.non_speech_dir, exist_ok=True)
+        try:
+            loaded_audio_for_ns = auditok.load(args.input)
+            print(f"Input audio {args.input} loaded for non-speech segment extraction.")
+        except Exception as e:
+            logging.error(f"Failed to load audio file {args.input} for non-speech extraction: {e}")
+            # Potentially disable non-speech processing if audio can't be loaded
+            loaded_audio_for_ns = None
+
     if args.subtract_only:
         print(f"Subtracting silence from {args.file_to_fix} and writing to {output_file} against {len(silence_segments)} silence segments")
 
@@ -194,6 +209,7 @@ def main(args):
         print(f"\nWriting {len(segments)} segments to {output_file}")
         with open(output_file, "w") as f:
             
+            last_speech_segment = None
             index = 0
             while index < len(full_list):
 
@@ -202,6 +218,8 @@ def main(args):
 
                 # Check if it's a silence segment
                 if s['kind'] == 'segment':
+
+                    last_speech_segment = s
 
                     if index - 1 >= 0 and full_list[index - 1]['kind'] == 'silence' and full_list[index - 1]['end'] < s['end']:
                         print(f"Moving start of segment {s['index']} from {s['start']:.3f} to {full_list[index - 1]['end']:.3f}")
@@ -222,10 +240,68 @@ def main(args):
                     # If there are two silence segments in a row but no ASR segment in between, this indicates
                     # a potential non-verbal event (click, which might need to be removed)
                     if index + 1 < len(full_list) and full_list[index + 1]['kind'] == 'silence':
-                        print(f"WARN: Non-ASR event detected between silence segments from {s['end']:.2f} to {full_list[index + 1]['start']:.2f}.")
+                        # This non-speech event is the audio between s['end'] and full_list[index+1]['start']
+                        # The actual audio corresponds to an auditok event r where:
+                        # r.start = s['end'] + analysis_window
+                        # r.end = full_list[index+1]['start'] - analysis_window
+                        
+                        ns_start_time = s['end'] + analysis_window
+                        ns_end_time = full_list[index+1]['start'] - analysis_window
+
+                        if ns_end_time > ns_start_time: # Ensure positive duration
+                            print(f"INFO: Non-ASR event detected between silence segments from {s['end']:.3f} (adj to {ns_start_time:.3f}) to {full_list[index + 1]['start']:.3f} (adj to {ns_end_time:.3f}).")
+
+                            if args.non_speech_dir and loaded_audio_for_ns:
+                                # Find previous ASR segment index
+                                prev_asr_segment_obj = None
+                                for i in range(index - 1, -1, -1):
+                                    if full_list[i]['kind'] == 'segment':
+                                        prev_asr_segment_obj = full_list[i]
+                                        break
+                                prev_asr_idx_text = str(prev_asr_segment_obj['index']) + " " + prev_asr_segment_obj['text'] if prev_asr_segment_obj else "start of audio"
+
+                                # Find next ASR segment index
+                                next_asr_segment_obj = None
+                                for i in range(index + 2, len(full_list)):
+                                    if full_list[i]['kind'] == 'segment':
+                                        next_asr_segment_obj = full_list[i]
+                                        break
+                                next_asr_idx_text = str(next_asr_segment_obj['index']) + " " + next_asr_segment_obj['text'] if next_asr_segment_obj else "end of audio"
+                                
+                                ns_filename = f"{non_speech_file_counter:04d}.wav"
+                                ns_filepath = os.path.join(args.non_speech_dir, ns_filename)
+                                
+                                try:
+                                    # auditok slices audio in milliseconds
+                                    segment_to_save = loaded_audio_for_ns[int(ns_start_time * 1000):int(ns_end_time * 1000)]
+                                    segment_to_save.save(ns_filepath)
+                                    
+                                    srt_text = f"Non-speech segment detected between segment '{prev_asr_idx_text}' and segment '{next_asr_idx_text}'."
+                                    non_speech_srt_entries.append({
+                                        'index': non_speech_file_counter,
+                                        'start_time': ns_start_time,
+                                        'end_time': ns_end_time,
+                                        'text': srt_text
+                                    })
+                                    print(f"Saved non-speech segment {ns_filename} and prepared SRT entry.")
+                                    non_speech_file_counter += 1
+                                except Exception as e:
+                                    logging.error(f"Error saving non-speech segment {ns_filename}: {e}")
+                        else:
+                            print(f"WARN: Potential non-ASR event detected but duration is zero or negative ({ns_start_time=}, {ns_end_time=}). Skipping.")
 
                 index += 1
- 
+    
+    # After the loop, write the non_speech.srt file if entries exist
+    if args.non_speech_dir and non_speech_srt_entries:
+        ns_srt_path = os.path.join(args.non_speech_dir, "non-speech.srt")
+        with open(ns_srt_path, "w", encoding='utf-8') as ns_f:
+            for entry in non_speech_srt_entries:
+                ns_f.write(f"{entry['index']}\n")
+                ns_f.write(f"{seconds_to_srt_time(entry['start_time'])} --> {seconds_to_srt_time(entry['end_time'])}\n")
+                ns_f.write(f"{entry['text']}\n\n")
+        print(f"Non-speech SRT file written to {ns_srt_path}")
+
 if __name__ == "__main__":
 
     # parser options
@@ -261,6 +337,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--subtract_only", "--subtract-only", action="store_true", help="Only shorten the attached SRT file segments by the silence detected. Do not extend.")
     
+    parser.add_argument(
+        "--non-speech-dir", type=str, help="Directory to save non-speech audio segments and a non-speech.srt file.")
+
     args = parser.parse_args()
 
     if args.negate and args.file_to_fix is not None:
