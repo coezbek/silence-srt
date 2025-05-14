@@ -205,6 +205,24 @@ def main(args):
         # Sort the full list by start time
         full_list.sort(key=lambda x: x['start'])
 
+        # We need to filter out all silence segments which are inside the speech segments
+        index = 0
+        last_segment = None
+        while index < len(full_list):
+            s = full_list[index]
+
+            if s['kind'] == 'segment':
+                last_segment = s
+
+            elif s['kind'] == 'silence' and last_segment is not None:
+                # Check if the silence segment is inside the last speech segment
+                if last_segment['start'] < s['start'] < last_segment['end'] and last_segment['start'] < s['end'] < last_segment['end']:
+                    print(f"Removing silence segment {index} from {s['start']:.2f} to {s['end']:.2f} because it is entirely inside segment {last_segment['index']} from {last_segment['start']:.2f} to {last_segment['end']:.2f}")
+                    del full_list[index]
+                    continue
+
+            index += 1
+
         # --- Write all adjusted segments to the output file ---
         print(f"\nWriting {len(segments)} segments to {output_file}")
         with open(output_file, "w") as f:
@@ -216,7 +234,7 @@ def main(args):
                 # Get the current segment
                 s = full_list[index]
 
-                # Check if it's a silence segment
+                # Depending on the kind of segment, we will handle it differently
                 if s['kind'] == 'segment':
 
                     last_speech_segment = s
@@ -225,7 +243,7 @@ def main(args):
                         print(f"Moving start of segment {s['index']} from {s['start']:.3f} to {full_list[index - 1]['end']:.3f}")
                         s['start'] = full_list[index - 1]['end']
 
-                    if index + 1 < len(full_list) and full_list[index + 1]['kind'] == 'silence':
+                    if index + 1 < len(full_list) and full_list[index + 1]['kind'] == 'silence' and full_list[index + 1]['end'] > s['end']:
                         s['end'] = full_list[index + 1]['start']
 
                     if s['start'] > s['end']:
