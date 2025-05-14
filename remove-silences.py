@@ -72,9 +72,15 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
         if first_sound_start_time >= tolerance:
             needs_front_trimming = True
             logging.debug(f"{filepath}: Leading silence detected. Audio starts at {first_sound_start_time:.3f}s.")
-        if (original_duration - last_sound_end_time) >= tolerance:
+        else:
+            first_sound_start_time = 0.0 # No leading silence
+        
+        enable_trailing_trimming = False
+        if enable_trailing_trimming and (original_duration - last_sound_end_time) >= tolerance:
             needs_back_trimming = True
             logging.debug(f"{filepath}: Trailing silence detected. Audio ends at {last_sound_end_time:.3f}s (original duration {original_duration:.3f}s).")
+        else:
+            last_sound_end_time = original_duration # No trailing silence
 
         if not (needs_front_trimming or needs_back_trimming):
             logging.info(f"No significant leading/trailing silence to remove in {filepath}. Skipping modification.")
