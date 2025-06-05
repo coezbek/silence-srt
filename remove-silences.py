@@ -52,7 +52,7 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
             if args.output_dir:
               output_filepath = os.path.join(args.output_dir, os.path.basename(filepath))
               shutil.copy2(filepath, output_filepath)
-              logging.info(f"Saved unmodified audio to: {output_filepath}")
+              logging.debug(f"Saved unmodified audio to: {output_filepath}")
             return False
         
         original_duration = original_audio_full.duration
@@ -83,16 +83,16 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
             last_sound_end_time = original_duration # No trailing silence
 
         if not (needs_front_trimming or needs_back_trimming):
-            logging.info(f"No significant leading/trailing silence to remove in {filepath}. Skipping modification.")
+            logging.debug(f"No significant leading/trailing silence to remove in {filepath}. Skipping modification.")
             if args.output_dir:
               output_filepath = os.path.join(args.output_dir, os.path.basename(filepath))
               shutil.copy2(filepath, output_filepath)
-              logging.info(f"Saved unmodified audio to: {output_filepath}")
+              logging.debug(f"Saved unmodified audio to: {output_filepath}")
 
             return False
 
         # This file needs to be modified
-        logging.info(f"MODIFICATION NEEDED for {filepath}: "
+        logging.debug(f"MODIFICATION NEEDED for {filepath}: "
                      f"Original duration: {original_duration:.3f}s. "
                      f"Content from {first_sound_start_time:.3f}s to {last_sound_end_time:.3f}s.")
         modified = True
@@ -112,7 +112,7 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
                 suffix = path.suffix
                 backup_filepath = path.with_suffix(f".bak{suffix}")
 
-                logging.info(f"Backing up original file to {backup_filepath}")
+                logging.debug(f"Backing up original file to {backup_filepath}")
                 shutil.copy2(filepath, backup_filepath)
             output_filepath = filepath
 
@@ -132,7 +132,7 @@ def process_file(filepath: str, args: argparse.Namespace) -> bool:
 
         # Save the trimmed audio
         trimmed_audio_region.save(output_filepath)
-        logging.info(f"Saved trimmed audio to: {output_filepath}")
+        logging.debug(f"Saved trimmed audio to: {output_filepath}")
         return True
 
     except auditok.exceptions.PyAVError as e:
