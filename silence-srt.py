@@ -52,6 +52,9 @@ def seconds_to_srt_time(seconds: float) -> str:
 def main(args):
 
     analysis_window = 0.01 # 10 ms    
+    max_silence = 0.05 # 50 ms
+    
+    print(f"Analyzing {args.input} for silence segments with min_dur={args.min_dur}s, max_dur={args.max_dur}s, threshold={args.threshold}, max_silence={max_silence}s, analysis_window={analysis_window}s")
 
     # `split` returns a generator of AudioRegion objects
     audio_events = auditok.split(
@@ -60,6 +63,7 @@ def main(args):
         max_dur=args.max_dur, # Maximum duration of an event
         max_silence=0.05, # Maximum tolerated silence duration within an event
         analysis_window=analysis_window,
+        drop_trailing_silence=True, # Drop trailing silence
         energy_threshold=args.threshold, # Detection threshold
     )
 
@@ -176,7 +180,7 @@ def main(args):
                 f.write(f"{s['text']}\n")
                 f.write("\n")
 
-    else: # This is the new block for subtract_only=False
+    else: # This is the new block for subtract_only=False, which will also extend segments based on silence
 
         segments = parse_srt(args.file_to_fix)
         if not segments:
@@ -334,20 +338,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--output", default="output.srt", type=str, help="Output srt file")
     
-    # 35 == needs very quite to detect  == less silence
-    # 40 == needs some quite to detect  
-    # 55 == some speech is lost         == more silence
+    # Lower => more speech/less silence
+    # ...
+    # 35 == very faint noises are detected as speech
+    # 40 == normal speech
+    # 55 == some normal speech is lost
+    # ...
+    # Higher => less speech/more silence
     parser.add_argument(
-        "-t", "--threshold", default=40, type=int, help="Detection threshold - energy-based. If energy exceeds this value, the event is considered valid.")
+        "-t", "--threshold", default=40, type=int, help="Detection threshold - energy-based. If energy exceeds this value, the event is considered speech. Higher threshold thus implies less speech/more silence.")
     
     parser.add_argument(
-        "-m", "--min_dur", default=0.1, type=float, help="Minimum duration of a valid audio event in seconds")
+        "-m", "--min_dur", default=0.05, type=float, help="Minimum duration of a valid audio event in seconds. Default is 0.05s (50ms). If you extend this, short isolated speech events might missed.")
     
     parser.add_argument(
-        "-M", "--max_dur", default=24*60*60, type=float, help="Maximum duration of an event")
+        "-M", "--max_dur", default=24*60*60, type=float, help="Maximum duration of an event. Default is unlimited/24 hours.")
     
     parser.add_argument(
-        "-s", "--min_silence_dur", default=0.05, type=float, help="Minimum duration of silence in seconds")
+        "-s", "--min_silence_dur", default=0.05, type=float, help="Minimum duration of silence in seconds. Default is 0.05s (50ms).")
     
     parser.add_argument(
         "-n", "--negate", action="store_true", help="Report events, rather than silence")
@@ -357,6 +365,9 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--non-speech-dir", type=str, help="Directory to save non-speech audio segments and a non-speech.srt file.")
+    
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose output")
 
     args = parser.parse_args()
 
